@@ -5,3 +5,45 @@
 4b09d4301b7a02b5392b9f5b5251719da54b6e83
 
 fastlane-supply@tangential-box-448406-r1.iam.gserviceaccount.com
+
+def ipaPath = "build/MyApp.ipa"
+def ipaName = "MyApp.ipa"
+def token   = "<YOUR_JWT_TOKEN_HERE>"
+
+commands.add("""
+fileSize=\\\$(stat -c%s ${ipaPath} 2>/dev/null || stat -f%z ${ipaPath})
+response=\\\$(curl -s -X POST https://api.appstoreconnect.apple.com/v1/buildUploads -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" -d '{\\"data\\":{\\"type\\":\\"buildUploads\\",\\"attributes\\":{\\"fileName\\":\\"${ipaName}\\",\\"fileSize\\":'\$fileSize'}}}')
+uploadId=\\\$(echo "\\\$response" | /rafent/app/jq/jq -r '.data.id')
+echo "Upload session: \\\$uploadId"
+
+totalChunks=\\\$(echo "\\\$response" | /rafent/app/jq/jq '.data.attributes.uploadOperations | length')
+uploadedBytes=0
+
+echo "\\\$response" | /rafent/app/jq/jq -c '.data.attributes.uploadOperations[]' | nl -v 0 | while read idx op; do
+  offset=\\\$(echo "\\\$op" | /rafent/app/jq/jq -r '.offset')
+  length=\\\$(echo "\\\$op" | /rafent/app/jq/jq -r '.length')
+  method=\\\$(echo "\\\$op" | /rafent/app/jq/jq -r '.method')
+  url=\\\$(echo "\\\$op" | /rafent/app/jq/jq -r '.url')
+  headers=\\\$(echo "\\\$op" | /rafent/app/jq/jq -r ' .requestHeaders | map("-H \\"\\(.name): \\(.value)\\"") | join(" ") ')
+  echo "Uploading chunk \\\$((idx+1))/\\\$totalChunks offset: \\\$offset length: \\\$length"
+
+  attempt=0; success=0
+  while [ \\\$success -eq 0 ] && [ \\\$attempt -lt 3 ]; do
+    attempt=\\\$((attempt+1))
+    dd if=${ipaPath} bs=1 skip=\\\$offset count=\\\$length 2>/dev/null | curl -f -s -X \\$method \\$url \\$headers --data-binary @- && success=1 || echo "Retry \\\$attempt/3"
+  done
+
+  [ \\\$success -eq 0 ] && echo "Chunk failed" >&2 && exit 1
+  uploadedBytes=\\\$((uploadedBytes + length))
+  percent=\\\$((uploadedBytes * 100 / fileSize))
+  echo "Chunk \\\$((idx+1)) uploaded, total progress: \\\$percent%"
+done
+
+checksum=\\\$(shasum -a 256 ${ipaPath} | awk '{print \$1}')
+[ -z "\\\$checksum" ] || [ \${#checksum} -ne 64 ] && echo "Checksum failed" >&2 && exit 1
+echo "Checksum: \\\$checksum"
+
+commit_payload=\\\$(/rafent/app/jq/jq -n --arg id "\\\$uploadId" '{data:{type:"buildUploads", id:\\\$id, attributes:{uploaded:true}}}')
+curl -f -s -X PATCH https://api.appstoreconnect.apple.com/v1/buildUploads/\\\$uploadId -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" -d "\\\$commit_payload"
+echo "Upload session committed"
+""")
