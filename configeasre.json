@@ -47,3 +47,460 @@ commit_payload=\\\$(/rafent/app/jq/jq -n --arg id "\\\$uploadId" '{data:{type:"b
 curl -f -s -X PATCH https://api.appstoreconnect.apple.com/v1/buildUploads/\\\$uploadId -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" -d "\\\$commit_payload"
 echo "Upload session committed"
 """)
+
+
+-------
+
+#!/usr/bin/env bash
+# =============================================================================
+# asc_upload.sh — App Store Connect Build Upload API (v4.1+)
+# =============================================================================
+#
+# USAGE
+#   ./asc_upload.sh <ipa_path> [command] [--platform PLATFORM]
+#
+# ENVIRONMENT
+#   JWT             App Store Connect API Bearer token (required)
+#
+# ARGUMENTS
+#   ipa_path        Path to the signed .ipa file
+#
+# COMMANDS  (optional, default: both)
+#   validate        Check build-number uniqueness only
+#   upload          Upload only  (skip validation)
+#   both            Validate then upload  (default)
+#
+# OPTIONS
+#   --platform      IOS | MAC_OS | TV_OS | VISION_OS  (default: IOS)
+#   -h, --help      Show this help and exit
+#
+# EXAMPLES
+#   export JWT="eyJ..."
+#   ./asc_upload.sh MyApp.ipa
+#   ./asc_upload.sh MyApp.ipa validate
+#   ./asc_upload.sh MyApp.ipa upload --platform MAC_OS
+#
+# EXIT CODES
+#   0  success
+#   1  validation failed — duplicate build number
+#   2  configuration / API / upload error
+#
+# REQUIREMENTS
+#   curl                  HTTP requests
+#   /rafent/app/jq/jq     JSON parsing
+#   python3               plist reading (stdlib only — no pip)
+#   unzip                 IPA inspection
+# =============================================================================
+
+# ── Strict mode only when running directly (not sourced by test suite) ────────
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && set -euo pipefail
+
+# ── generate JWT token ────────────────────────────────────────────────────────
+JWT=${JWT:-$(ruby /rafent/app/scripts/mobile/generate_jwt.rb)}
+
+# ── jq binary path ────────────────────────────────────────────────────────────
+: "${JQ:=/rafent/app/jq/jq}"  # overridable for tests
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+[[ -v ASC_BASE_URL    ]] || readonly ASC_BASE_URL="https://api.appstoreconnect.apple.com/v1"
+[[ -v ASC_PUT_TIMEOUT ]] || readonly ASC_PUT_TIMEOUT=300   # curl max-time per chunk (s)
+: "${ASC_PUT_RETRIES:=3}"    # attempts per chunk PUT      (overridable for tests)
+: "${ASC_CURL_RETRIES:=3}"   # curl-level retries for API  (overridable for tests)
+
+# ── Colours (safe — always returns 0 even in non-tty / pipe environments) ─────
+_asc_colours() {
+  if [[ -t 1 ]]; then
+    ASC_RED='\033[0;31m' ASC_GREEN='\033[0;32m' ASC_CYAN='\033[0;36m'
+    ASC_BOLD='\033[1m'   ASC_RESET='\033[0m'
+  else
+    ASC_RED='' ASC_GREEN='' ASC_CYAN='' ASC_BOLD='' ASC_RESET=''
+  fi
+  return 0
+}
+_asc_colours
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+asc_log() { printf "${ASC_CYAN}→${ASC_RESET} %s\n"  "$*"; }
+asc_ok()  { printf "${ASC_GREEN}✓${ASC_RESET} %s\n" "$*"; }
+asc_die() { printf "${ASC_RED}✗${ASC_RESET} %s\n"   "$*" >&2; exit "${2:-2}"; }
+
+# =============================================================================
+# jq wrappers
+# =============================================================================
+
+# jq_get <json> <filter>   → raw (-r) scalar string output
+jq_get() { printf '%s' "$1" | "$JQ" -r "$2"; }
+
+# jq_len <json> <filter>   → integer array/object length
+jq_len() { printf '%s' "$1" | "$JQ" "$2 | length"; }
+
+# jq_raw <json> <filter>   → compact (-c) raw output (for arrays/objects)
+jq_raw() { printf '%s' "$1" | "$JQ" -rc "$2"; }
+
+# =============================================================================
+# URL encoder  (pure bash — no external tools needed)
+# =============================================================================
+url_encode() {
+  local string="$1" encoded="" i char ord hex
+  for (( i=0; i<${#string}; i++ )); do
+    char="${string:$i:1}"
+    case "$char" in
+      [A-Za-z0-9._~-]) encoded+="$char" ;;
+      *)
+        printf -v ord "%d" "'$char"
+        printf -v hex "%02X" "$ord"
+        encoded+="%$hex"
+        ;;
+    esac
+  done
+  printf '%s' "$encoded"
+}
+
+# =============================================================================
+# Plist reader  (python3 plistlib — binary plist, no jq substitute)
+# =============================================================================
+asc_plist_read() {
+  local plist_path="$1" key="$2"
+  python3 - "$plist_path" "$key" <<'PY'
+import sys, plistlib
+with open(sys.argv[1], 'rb') as f:
+    d = plistlib.load(f)
+print(d[sys.argv[2]])
+PY
+}
+
+# =============================================================================
+# Progress bar  (pure bash unicode — no python3)
+# =============================================================================
+asc_progress_bar() {
+  local done="$1" total="$2" label="$3"
+  local pct=$(( done * 100 / total ))
+  local filled=$(( pct / 5 )) empty=$(( 20 - pct / 5 ))
+  local bar="" i
+  for (( i=0; i<filled; i++ )); do bar+="█"; done
+  for (( i=0; i<empty;  i++ )); do bar+="░"; done
+  printf "\r   [%s] %3d%%  %s" "$bar" "$pct" "$label"
+}
+
+# =============================================================================
+# curl wrapper — $JWT injected, jq error parsing, exits 2 on HTTP error
+# =============================================================================
+asc_curl() {
+  local method="$1"; shift
+  local path="$1";   shift
+  local url; [[ "$path" == http* ]] && url="$path" || url="${ASC_BASE_URL}${path}"
+
+  local tmp; tmp=$(mktemp)
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmp'" RETURN
+
+  local status
+  status=$(curl -s -X "$method" "$url" \
+    -H "Authorization: Bearer ${JWT}" \
+    -H "Content-Type: application/json" \
+    --retry "${ASC_CURL_RETRIES}" \
+    --retry-delay 2 \
+    --retry-all-errors \
+    -o "$tmp" -w "%{http_code}" \
+    "$@") || asc_die "curl network error: $method $url"
+
+  local body; body=$(cat "$tmp")
+
+  if (( status < 200 || status >= 300 )); then
+    printf "${ASC_RED}✗${ASC_RESET} HTTP %s — %s %s\n" "$status" "$method" "$url" >&2
+    printf '%s' "$body" \
+      | "$JQ" -r '.errors[]? | "   [\(.code // "?")] \(.title) — \(.detail)"' \
+      2>/dev/null >&2 \
+      || printf '%s\n' "${body:0:400}" >&2
+    exit 2
+  fi
+  printf '%s' "$body"
+}
+
+# =============================================================================
+# Chunk PUT  (dd byte-range slice, per-chunk retry + exponential back-off)
+# =============================================================================
+asc_put_chunk() {
+  local url="$1" offset="$2" length="$3" ipa_path="$4" index="$5" total="$6"
+  shift 6
+  local -a hdr_args=()
+  while (( $# > 0 )); do hdr_args+=(-H "$1"); shift; done
+
+  local attempt status
+  for (( attempt=1; attempt <= ASC_PUT_RETRIES; attempt++ )); do
+    status=$(dd if="$ipa_path" bs=1 skip="$offset" count="$length" 2>/dev/null \
+      | curl -s -X PUT "$url" \
+          "${hdr_args[@]+"${hdr_args[@]}"}" \
+          --data-binary @- \
+          --max-time "${ASC_PUT_TIMEOUT}" \
+          -o /dev/null -w "%{http_code}") || true
+
+    (( status >= 200 && status < 300 )) && return 0
+    (( attempt < ASC_PUT_RETRIES )) && sleep $(( 2 ** attempt ))
+  done
+  asc_die "Chunk $index/$total failed after ${ASC_PUT_RETRIES} attempts (last HTTP ${status:-?})" 2
+}
+
+# =============================================================================
+# API domain functions
+# =============================================================================
+
+asc_get_app_id() {
+  local bundle_id="$1"
+  local encoded; encoded=$(url_encode "$bundle_id")
+  local resp; resp=$(asc_curl GET "/apps?filter%5BbundleId%5D=${encoded}")
+  local count; count=$(jq_len "$resp" ".data")
+  (( count > 0 )) || asc_die "No app found in App Store Connect for '${bundle_id}'" 2
+  jq_get "$resp" ".data[0].id"
+}
+
+asc_build_number_exists() {
+  local app_id="$1" build_number="$2"
+  local resp; resp=$(asc_curl GET \
+    "/builds?filter%5Bapp%5D=${app_id}&filter%5Bversion%5D=${build_number}&limit=1")
+  local count; count=$(jq_len "$resp" ".data")
+  (( count > 0 ))
+}
+
+asc_create_build_upload() {
+  local app_id="$1" bundle_version="$2" platform="$3"
+  local body
+  body=$(printf \
+    '{"data":{"type":"buildUploads","attributes":{"bundleVersion":"%s","platform":"%s"},"relationships":{"app":{"data":{"type":"apps","id":"%s"}}}}}' \
+    "$bundle_version" "$platform" "$app_id")
+  local resp; resp=$(asc_curl POST "/buildUploads" --data-raw "$body")
+  jq_get "$resp" ".data.id"
+}
+
+asc_create_build_upload_file() {
+  local build_upload_id="$1" file_name="$2" file_size="$3"
+  local body
+  body=$(printf \
+    '{"data":{"type":"buildUploadFiles","attributes":{"fileName":"%s","fileSize":%s,"assetType":"APP_STORE"},"relationships":{"buildUpload":{"data":{"type":"buildUploads","id":"%s"}}}}}' \
+    "$file_name" "$file_size" "$build_upload_id")
+  asc_curl POST "/buildUploadFiles" --data-raw "$body"
+}
+
+asc_commit_build_upload_file() {
+  local file_id="$1"
+  local body
+  body=$(printf \
+    '{"data":{"type":"buildUploadFiles","id":"%s","attributes":{"uploaded":true}}}' \
+    "$file_id")
+  local resp; resp=$(asc_curl PATCH "/buildUploadFiles/${file_id}" --data-raw "$body")
+  jq_get "$resp" ".data.attributes.state"
+}
+
+# =============================================================================
+# Upload chunks (sequential with progress bar)
+# =============================================================================
+asc_upload_chunks() {
+  local ops_json="$1" ipa_path="$2"
+  local total; total=$(jq_len "$ops_json" ".")
+  local ipa_size; ipa_size=$(wc -c < "$ipa_path" | tr -d ' ')
+
+  asc_log "Uploading ${total} chunk(s)…"
+
+  local i done_bytes=0
+  for (( i=0; i<total; i++ )); do
+    local url offset length
+    url=$(jq_get    "$ops_json" ".[$i].url")
+    offset=$(jq_get "$ops_json" ".[$i].offset")
+    length=$(jq_get "$ops_json" ".[$i].length")
+
+    local -a hdrs=()
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && hdrs+=("$line")
+    done < <(printf '%s' "$ops_json" \
+      | "$JQ" -r ".[$i].requestHeaders[] | \"\(.name): \(.value)\"")
+
+    asc_put_chunk "$url" "$offset" "$length" "$ipa_path" \
+      "$(( i+1 ))" "$total" "${hdrs[@]+"${hdrs[@]}"}"
+
+    done_bytes=$(( done_bytes + length ))
+    asc_progress_bar "$done_bytes" "$ipa_size" "chunk $(( i+1 ))/${total}"
+  done
+  printf '\n'
+}
+
+# =============================================================================
+# IPA inspection
+# =============================================================================
+asc_extract_ipa_info() {
+  local ipa_path="$1"
+  [[ -f "$ipa_path" ]] || asc_die "IPA not found: '$ipa_path'" 2
+
+  local tmp; tmp=$(mktemp -d)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" RETURN
+
+  unzip -q "$ipa_path" -d "$tmp"
+  local plist; plist=$(find "$tmp/Payload" -maxdepth 2 -name "Info.plist" | head -1)
+  [[ -n "$plist" ]] || asc_die "Info.plist not found inside IPA." 2
+
+  ASC_BUNDLE_ID=$(asc_plist_read      "$plist" "CFBundleIdentifier")
+  ASC_BUNDLE_VERSION=$(asc_plist_read "$plist" "CFBundleVersion")
+  ASC_BUNDLE_SHORT=$(asc_plist_read   "$plist" "CFBundleShortVersionString")
+
+  printf "   Bundle ID  : %s\n"             "$ASC_BUNDLE_ID"
+  printf "   Version    : %s  (build %s)\n" "$ASC_BUNDLE_SHORT" "$ASC_BUNDLE_VERSION"
+}
+
+# =============================================================================
+# Sub-commands
+# =============================================================================
+asc_cmd_validate() {
+  local ipa_path="$1"
+
+  asc_log "[1/2] Extracting IPA info…"
+  asc_extract_ipa_info "$ipa_path"
+
+  asc_log "[2/2] Validating build number uniqueness…"
+  local app_id; app_id=$(asc_get_app_id "$ASC_BUNDLE_ID") || exit $?
+  printf "   App ID     : %s\n" "$app_id"
+
+  if asc_build_number_exists "$app_id" "$ASC_BUNDLE_VERSION"; then
+    asc_die \
+      "Build number '${ASC_BUNDLE_VERSION}' already exists in App Store Connect.\n   Increment CFBundleVersion before uploading." \
+      1
+  fi
+  asc_ok "Build number ${ASC_BUNDLE_VERSION} is unique."
+}
+
+asc_cmd_upload() {
+  local ipa_path="$1" platform="$2"
+
+  asc_log "[1/6] Extracting IPA info…"
+  asc_extract_ipa_info "$ipa_path"
+
+  asc_log "[2/6] Resolving app…"
+  local app_id; app_id=$(asc_get_app_id "$ASC_BUNDLE_ID") || exit $?
+  printf "   App ID     : %s\n" "$app_id"
+
+  asc_log "[3/6] Creating BuildUpload session…"
+  local build_upload_id
+  build_upload_id=$(asc_create_build_upload "$app_id" "$ASC_BUNDLE_VERSION" "$platform")
+  printf "   Upload ID  : %s\n" "$build_upload_id"
+
+  asc_log "[4/6] Registering file…"
+  local ipa_name; ipa_name=$(basename "$ipa_path")
+  local ipa_size; ipa_size=$(wc -c < "$ipa_path" | tr -d ' ')
+  local buf_resp; buf_resp=$(asc_create_build_upload_file \
+    "$build_upload_id" "$ipa_name" "$ipa_size")
+
+  local file_id; file_id=$(jq_get "$buf_resp" ".data.id")
+  local ops_json; ops_json=$(jq_raw "$buf_resp" ".data.attributes.uploadOperations")
+  local op_count; op_count=$(jq_len "$ops_json" ".")
+
+  printf "   File ID    : %s\n" "$file_id"
+  printf "   Chunks     : %s\n" "$op_count"
+  (( op_count > 0 )) || asc_die "No uploadOperations returned — cannot upload." 2
+
+  asc_log "[5/6] Uploading chunks…"
+  asc_upload_chunks "$ops_json" "$ipa_path"
+
+  asc_log "[6/6] Committing…"
+  local state; state=$(asc_commit_build_upload_file "$file_id")
+  printf "   State      : %s\n" "$state"
+
+  case "$state" in
+    COMPLETE|COMPLETE_WITH_WARNINGS)
+      asc_ok "Upload complete — App Store Connect is processing the build."
+      asc_ok "Monitor via App Store Connect or webhook notifications."
+      ;;
+    *)
+      asc_die "Unexpected commit state '${state}'. Check App Store Connect." 2
+      ;;
+  esac
+}
+
+# =============================================================================
+# Argument parsing + entry point
+# =============================================================================
+_asc_usage() {
+  cat <<EOF
+Usage:
+  $(basename "$0") <ipa_path> [command] [--platform PLATFORM]
+
+Environment:
+  JWT             App Store Connect API Bearer token (required)
+
+Arguments:
+  ipa_path        Path to signed .ipa file
+
+Commands:
+  both            Validate then upload  (default)
+  validate        Check build-number uniqueness only
+  upload          Upload only
+
+Options:
+  --platform      IOS | MAC_OS | TV_OS | VISION_OS  (default: IOS)
+  -h, --help      Show this help
+
+Examples:
+  export JWT="eyJ..."
+  $(basename "$0") MyApp.ipa
+  $(basename "$0") MyApp.ipa validate
+  $(basename "$0") MyApp.ipa upload --platform MAC_OS
+EOF
+}
+
+_asc_check_tools() {
+  for tool in curl python3 unzip; do
+    command -v "$tool" &>/dev/null || asc_die "Required tool not found: $tool" 2
+  done
+  [[ -x "$JQ" ]] || asc_die "jq not found or not executable: $JQ" 2
+}
+
+_asc_main() {
+  local ipa_path="" cmd="both" platform="IOS"
+
+  for arg in "$@"; do
+    [[ "$arg" == "-h" || "$arg" == "--help" ]] && { _asc_usage; exit 0; }
+  done
+
+  (( $# >= 1 )) || { _asc_usage >&2; exit 2; }
+
+  ipa_path="$1"; shift
+
+  while (( $# > 0 )); do
+    case "$1" in
+      validate|upload|both) cmd="$1" ;;
+      --platform)
+        shift
+        (( $# > 0 )) || asc_die "--platform requires a value" 2
+        platform="${1^^}"
+        ;;
+      *) asc_die "Unknown argument: '$1'. Run with --help for usage." 2 ;;
+    esac
+    shift
+  done
+
+  _asc_check_tools
+  [[ -f "$ipa_path" ]] || asc_die "IPA file not found: '$ipa_path'" 2
+  [[ -n "${JWT:-}"  ]] || asc_die "Environment variable JWT is not set or empty." 2
+
+  case "$platform" in
+    IOS|MAC_OS|TV_OS|VISION_OS) ;;
+    *) asc_die "Invalid platform '$platform'. Choose: IOS MAC_OS TV_OS VISION_OS" 2 ;;
+  esac
+
+  printf "${ASC_BOLD}══════════════════════════════════════════${ASC_RESET}\n"
+  printf "${ASC_BOLD} App Store Connect — TestFlight Upload${ASC_RESET}\n"
+  printf "${ASC_BOLD}══════════════════════════════════════════${ASC_RESET}\n"
+  printf "   IPA        : %s\n"   "$ipa_path"
+  printf "   Platform   : %s\n"   "$platform"
+  printf "   Command    : %s\n\n" "$cmd"
+
+  case "$cmd" in
+    validate) asc_cmd_validate "$ipa_path" ;;
+    upload)   asc_cmd_upload   "$ipa_path" "$platform" ;;
+    both)
+      asc_cmd_validate "$ipa_path"
+      printf '\n'
+      asc_cmd_upload   "$ipa_path" "$platform"
+      ;;
+  esac
+}
+
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && _asc_main "$@"
