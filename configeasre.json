@@ -504,3 +504,64 @@ _asc_main() {
 }
 
 [[ "${BASH_SOURCE[0]}" == "${0}" ]] && _asc_main "$@"
+
+############################
+
+
+# Chrome RPM
+http://dl.google.com/linux/chrome/rpm/stable/x86_64/google-chrome-stable-146.0.7680.164-1.x86_64.rpm
+
+# Chrome (zip)
+https://storage.googleapis.com/chrome-for-testing-public/146.0.7680.164/linux64/chrome-linux64.zip
+
+# ChromeDriver
+https://storage.googleapis.com/chrome-for-testing-public/146.0.7680.164/linux64/chromedriver-linux64.zip
+
+# Headless Shell
+https://storage.googleapis.com/chrome-for-testing-public/146.0.7680.164/linux64/chrome-headless-shell-linux64.zip
+
+
+# ChromeDriver
+https://storage.googleapis.com/chrome-for-testing-public/146.0.7680.165/win64/chromedriver-win64.zip
+
+# Headless Shell
+https://storage.googleapis.com/chrome-for-testing-public/146.0.7680.165/win64/chrome-headless-shell-win64.zip
+
+
+# Chrome
+https://storage.googleapis.com/chrome-for-testing-public/146.0.7680.165/mac-arm64/chrome-mac-arm64.zip
+
+# ChromeDriver
+https://storage.googleapis.com/chrome-for-testing-public/146.0.7680.165/mac-arm64/chromedriver-mac-arm64.zip
+
+# Headless Shell
+https://storage.googleapis.com/chrome-for-testing-public/146.0.7680.165/mac-arm64/chrome-headless-shell-mac-arm64.zip
+
+=============
+
+# Chrome RPM
+http://dl.google.com/linux/chrome/rpm/stable/x86_64/google-chrome-stable-147.0.7727.101-1.x86_64.rpm
+
+# Chrome (zip)
+https://storage.googleapis.com/chrome-for-testing-public/147.0.7727.101/linux64/chrome-linux64.zip
+
+# ChromeDriver
+https://storage.googleapis.com/chrome-for-testing-public/147.0.7727.101/linux64/chromedriver-linux64.zip
+
+# Headless Shell
+https://storage.googleapis.com/chrome-for-testing-public/147.0.7727.101/linux64/chrome-headless-shell-linux64.zip
+
+# ChromeDriver
+https://storage.googleapis.com/chrome-for-testing-public/147.0.7727.102/win64/chromedriver-win64.zip
+
+# Headless Shell
+https://storage.googleapis.com/chrome-for-testing-public/147.0.7727.102/win64/chrome-headless-shell-win64.zip
+
+# Chrome
+https://storage.googleapis.com/chrome-for-testing-public/147.0.7727.102/mac-arm64/chrome-mac-arm64.zip
+
+# ChromeDriver
+https://storage.googleapis.com/chrome-for-testing-public/147.0.7727.102/mac-arm64/chromedriver-mac-arm64.zip
+
+# Headless Shell
+https://storage.googleapis.com/chrome-for-testing-public/147.0.7727.102/mac-arm64/chrome-headless-shell-mac-arm64.zip
