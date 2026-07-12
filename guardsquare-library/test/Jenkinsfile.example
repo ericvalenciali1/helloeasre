@@ -1,0 +1,52 @@
+// Example pipeline using the guardsquare-library shared library.
+// Assumes the library is registered in Jenkins as "guardsquare-library"
+// (Manage Jenkins > System > Global Pipeline Libraries), or loaded with
+// @Library('guardsquare-library') at the top of your own Jenkinsfile.
+
+@Library('guardsquare-library') _
+
+pipeline {
+    agent none
+
+    parameters {
+        string(name: 'IPA_PATH', defaultValue: '', description: 'Path to source .ipa (on the macOS agent)')
+        string(name: 'APK_PATH', defaultValue: '', description: 'Path to source .apk (on the macOS agent)')
+    }
+
+    stages {
+        stage('Protect Apps') {
+            parallel {
+                stage('iOS — iXGuard') {
+                    agent { label 'macos' }
+                    steps {
+                        script {
+                            def protectedIpa = ixguardProtect(
+                                inputIpa: params.IPA_PATH,
+                                outputIpa: "${WORKSPACE}/protected/MyApp-protected.ipa",
+                                configFile: "${WORKSPACE}/ixguard.yml"
+                            )
+                            echo "Protected IPA ready at: ${protectedIpa}"
+                            archiveArtifacts artifacts: 'protected/*.ipa'
+                        }
+                    }
+                }
+
+                stage('Android — DexGuard') {
+                    agent { label 'macos' }
+                    steps {
+                        script {
+                            def protectedApk = dexguardProtect(
+                                inputApk: params.APK_PATH,
+                                outputApk: "${WORKSPACE}/protected/MyApp-protected.apk",
+                                configFile: "${WORKSPACE}/dexguard-project.pro",
+                                dexguardPath: '/Applications/DexGuard/lib/dexguard.jar'
+                            )
+                            echo "Protected APK ready at: ${protectedApk}"
+                            archiveArtifacts artifacts: 'protected/*.apk'
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

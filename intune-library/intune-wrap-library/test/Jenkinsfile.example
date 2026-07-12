@@ -1,0 +1,61 @@
+// Example pipeline using the intune-wrap-library shared library.
+// Assumes the library is registered in Jenkins as "intune-wrap-library"
+// (Manage Jenkins > System > Global Pipeline Libraries), or loaded with
+// @Library('intune-wrap-library') at the top of your own Jenkinsfile.
+
+@Library('intune-wrap-library') _
+
+pipeline {
+    agent none
+
+    parameters {
+        string(name: 'IPA_PATH', defaultValue: '', description: 'Path to source .ipa (on the macOS agent)')
+        string(name: 'ANDROID_APP_PATH', defaultValue: '', description: 'Path to source .apk or .aab (on the Windows agent)')
+    }
+
+    stages {
+        stage('Wrap Apps') {
+            parallel {
+                stage('iOS') {
+                    agent { label 'macos' }
+                    steps {
+                        script {
+                            def wrappedIpa = intuneWrapIOS(
+                                inputIpa: params.IPA_PATH,
+                                outputDir: "${WORKSPACE}/wrapped",
+                                provisioningProfile: '/Users/ci/profiles/MyApp.mobileprovision',
+                                signingCertificate: 'Apple Distribution: My Company (ABCDE12345)',
+                                verbose: true
+                            )
+                            echo "Wrapped IPA ready at: ${wrappedIpa}"
+                            archiveArtifacts artifacts: "wrapped/*.ipa"
+                        }
+                    }
+                }
+
+                stage('Android') {
+                    agent { label 'windows' }
+                    steps {
+                        script {
+                            // ANDROID_APP_PATH may be a .apk or a .aab — intuneWrapAndroid
+                            // detects the extension and, for a .aab, converts it to a
+                            // universal .apk via bundletool before wrapping.
+                            def wrappedApk = intuneWrapAndroid(
+                                inputApk: params.ANDROID_APP_PATH,
+                                outputDir: "${WORKSPACE}\\wrapped",
+                                bundletoolPath: 'C:\\tools\\bundletool-all.jar',
+                                keyStorePath: 'C:\\keys\\myapp.keystore',
+                                keyAlias: 'myapp',
+                                keyStorePasswordCredentialsId: 'android-keystore-password',
+                                keyPasswordCredentialsId: 'android-key-password',
+                                verbose: true
+                            )
+                            echo "Wrapped APK ready at: ${wrappedApk}"
+                            archiveArtifacts artifacts: "wrapped\\*.apk"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

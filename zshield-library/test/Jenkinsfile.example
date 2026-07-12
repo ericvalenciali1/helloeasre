@@ -1,0 +1,50 @@
+// Example pipeline using the zshield-library shared library.
+// Assumes the library is registered in Jenkins as "zshield-library"
+// (Manage Jenkins > System > Global Pipeline Libraries), or loaded with
+// @Library('zshield-library') at the top of your own Jenkinsfile.
+
+@Library('zshield-library') _
+
+pipeline {
+    agent none
+
+    parameters {
+        string(name: 'NWPROJ_PATH', defaultValue: '', description: 'Path to the .nwproj file (on the macOS agent)')
+    }
+
+    stages {
+        stage('zShield — prepare & protect') {
+            agent { label 'macos' }
+            steps {
+                script {
+                    // Single call running multiple actions in order.
+                    // Adjust actionArgs/extraArgs to match your actual zShield CLI syntax.
+                    def results = zshieldRun(
+                        nwprojPath: params.NWPROJ_PATH,
+                        actions: ['prepare', 'protect'],
+                        actionArgs: [
+                            protect: ['--output', "${WORKSPACE}/protected"]
+                        ]
+                    )
+                    echo "Exit codes: ${results}"
+                }
+            }
+        }
+
+        // Equivalent using the single-action convenience steps instead:
+        stage('zShield — step by step (alternative)') {
+            agent { label 'macos' }
+            when { expression { false } } // illustrative only; not executed
+            steps {
+                script {
+                    zshieldUpgrade(nwprojPath: params.NWPROJ_PATH)
+                    zshieldPrepare(nwprojPath: params.NWPROJ_PATH)
+                    zshieldProtect(
+                        nwprojPath: params.NWPROJ_PATH,
+                        extraArgs: ['--output', "${WORKSPACE}/protected"]
+                    )
+                }
+            }
+        }
+    }
+}
