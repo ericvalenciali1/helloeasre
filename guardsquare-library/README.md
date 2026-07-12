@@ -32,9 +32,8 @@ If your actual DexGuard CLI differs, you can either:
 - pass extra/replacement flags via `extraArgs`,
 - pass `commandOverride` with the full command you actually run (inputApk /
   outputApk / configFile are still validated to exist beforehand), or
-- edit `DexGuardRunner.buildCommand()` in
-  `src/org/example/guardsquare/DexGuardRunner.groovy` directly — the
-  command construction is isolated to a few lines.
+- edit `buildDexguardCommand()` directly in `vars/dexguardProtect.groovy` —
+  the command construction is isolated to a few lines.
 
 ## Repository layout
 
@@ -43,14 +42,15 @@ guardsquare-library/
 ├── vars/
 │   ├── ixguardProtect.groovy    # global step: protect an .ipa with iXGuard
 │   └── dexguardProtect.groovy   # global step: protect an .apk with DexGuard
-├── src/org/example/guardsquare/
-│   ├── IXGuardRunner.groovy
-│   ├── DexGuardRunner.groovy
-│   └── GuardsquareException.groovy
 ├── test/
 │   └── Jenkinsfile.example
 └── README.md
 ```
+
+Each step is fully self-contained in its `vars/*.groovy` file (validation,
+command construction, execution) — there's no `src/` class hierarchy to
+navigate. Failures are raised with Jenkins' built-in `error()` step, which
+fails the build with a clear message in the console log.
 
 Register this repo in Jenkins under **Manage Jenkins → System → Global
 Pipeline Libraries** (or load per-Jenkinsfile with `@Library`).

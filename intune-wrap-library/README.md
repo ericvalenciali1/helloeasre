@@ -17,21 +17,22 @@ Both tools are Microsoft binaries that must already be installed on the
 respective agents — this library only orchestrates calling them from a
 pipeline and does not ship the tools themselves.
 
-## Repository layout (standard Jenkins Shared Library structure)
+## Repository layout (vars-only — no src/ classes)
 
 ```
 intune-wrap-library/
 ├── vars/
 │   ├── intuneWrapIOS.groovy       # global step: intuneWrapIOS(...)
 │   └── intuneWrapAndroid.groovy   # global step: intuneWrapAndroid(...)
-├── src/org/example/intune/
-│   ├── IntuneIOSWrapper.groovy      # command construction + validation for iOS
-│   ├── IntuneAndroidWrapper.groovy  # command construction + validation for Android
-│   └── IntuneWrapperException.groovy
 ├── test/
 │   └── Jenkinsfile.example         # sample pipeline
 └── README.md
 ```
+
+Each step is fully self-contained (validation, command construction,
+execution) in its own `vars/*.groovy` file. Failures are raised with
+Jenkins' built-in `error()` step, which fails the build with a clear
+message in the console log.
 
 Register this repo in Jenkins under **Manage Jenkins → System → Global
 Pipeline Libraries** (or load per-Jenkinsfile with `@Library`).

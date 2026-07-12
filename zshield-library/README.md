@@ -19,9 +19,9 @@ e.g. `zshield prepare "/path/to/App.nwproj"` or
 If your zShield CLI needs a different argument order, flags before the
 project path, or anything else nonstandard, pass those via `actionArgs` /
 `extraArgs` (see below) — nothing beyond `<action> <nwprojPath>` is
-inferred. If the pattern above doesn't match your CLI at all, adjust
-`ZShieldRunner.run()` in `src/org/example/zshield/ZShieldRunner.groovy`
-(the command-construction logic is isolated to a few lines).
+inferred. If the pattern above doesn't match your CLI at all, edit the
+command-construction logic directly in `vars/zshieldRun.groovy` (it's
+isolated to a few lines inside `runActions()`).
 
 ## Repository layout
 
@@ -32,13 +32,16 @@ zshield-library/
 │   ├── zshieldUpgrade.groovy   # convenience: single 'upgrade' action
 │   ├── zshieldPrepare.groovy   # convenience: single 'prepare' action
 │   └── zshieldProtect.groovy   # convenience: single 'protect' action
-├── src/org/example/zshield/
-│   ├── ZShieldRunner.groovy    # command construction, validation, execution
-│   └── ZShieldException.groovy
 ├── test/
 │   └── Jenkinsfile.example
 └── README.md
 ```
+
+`zshieldRun` is fully self-contained (validation, command construction,
+execution) in its `vars/zshieldRun.groovy` file — there's no `src/` class
+hierarchy. The three convenience steps just delegate to `zshieldRun`.
+Failures are raised with Jenkins' built-in `error()` step, which fails the
+build with a clear message in the console log.
 
 Register this repo in Jenkins under **Manage Jenkins → System → Global
 Pipeline Libraries** (or load per-Jenkinsfile with `@Library`).
