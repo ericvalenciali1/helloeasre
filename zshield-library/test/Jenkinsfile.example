@@ -13,7 +13,7 @@ pipeline {
     }
 
     stages {
-        stage('zShield — prepare & protect') {
+        stage('zShield — prepare, protect & analyze') {
             agent { label 'macos' }
             steps {
                 script {
@@ -21,7 +21,7 @@ pipeline {
                     // Adjust actionArgs/extraArgs to match your actual zShield CLI syntax.
                     def results = zshieldRun(
                         nwprojPath: params.NWPROJ_PATH,
-                        actions: ['prepare', 'protect'],
+                        actions: ['prepare', 'protect', 'analyze'],
                         actionArgs: [
                             protect: ['--output', "${WORKSPACE}/protected"]
                         ]
@@ -43,6 +43,7 @@ pipeline {
                         nwprojPath: params.NWPROJ_PATH,
                         extraArgs: ['--output', "${WORKSPACE}/protected"]
                     )
+                    zshieldAnalyze(nwprojPath: params.NWPROJ_PATH)
                 }
             }
         }

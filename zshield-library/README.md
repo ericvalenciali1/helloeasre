@@ -31,7 +31,8 @@ zshield-library/
 │   ├── zshieldRun.groovy       # global step: run one or more actions in one call
 │   ├── zshieldUpgrade.groovy   # convenience: single 'upgrade' action
 │   ├── zshieldPrepare.groovy   # convenience: single 'prepare' action
-│   └── zshieldProtect.groovy   # convenience: single 'protect' action
+│   ├── zshieldProtect.groovy   # convenience: single 'protect' action
+│   └── zshieldAnalyze.groovy   # convenience: single 'analyze' action
 ├── test/
 │   └── Jenkinsfile.example
 └── README.md
@@ -39,7 +40,7 @@ zshield-library/
 
 `zshieldRun` is fully self-contained (validation, command construction,
 execution) in its `vars/zshieldRun.groovy` file — there's no `src/` class
-hierarchy. The three convenience steps just delegate to `zshieldRun`.
+hierarchy. The four convenience steps just delegate to `zshieldRun`.
 Failures are raised with Jenkins' built-in `error()` step, which fails the
 build with a clear message in the console log.
 
@@ -51,7 +52,7 @@ Pipeline Libraries** (or load per-Jenkinsfile with `@Library`).
 | Parameter          | Required | Description                                                                 |
 |----------------------|:--------:|-------------------------------------------------------------------------------|
 | `nwprojPath`          | ✅       | Path to the `.nwproj` file                                                   |
-| `actions`             | ✅       | List of one or more of `'upgrade'`, `'prepare'`, `'protect'`, run in the given order |
+| `actions`             | ✅       | List of one or more of `'upgrade'`, `'prepare'`, `'protect'`, `'analyze'`, run in the given order |
 | `actionArgs`          |          | `Map<String, List<String>>` of extra CLI args per action, e.g. `[protect: ['--output', '/path']]` |
 | `extraArgs`           |          | `List<String>` of extra CLI args appended to **every** action call            |
 | `zshieldPath`         |          | Path to the `zshield` executable (default: `zshield`, resolved via `PATH`)   |
@@ -82,9 +83,9 @@ stage('zShield') {
 
 ## Single-action convenience steps
 
-`zshieldUpgrade`, `zshieldPrepare`, `zshieldProtect` each take the same
-parameters as `zshieldRun` (minus `actions`, which is fixed) and return the
-single exit code (`Integer`) of that action.
+`zshieldUpgrade`, `zshieldPrepare`, `zshieldProtect`, `zshieldAnalyze` each
+take the same parameters as `zshieldRun` (minus `actions`, which is fixed)
+and return the single exit code (`Integer`) of that action.
 
 ```groovy
 zshieldUpgrade(nwprojPath: '/Users/ci/projects/App.nwproj')
@@ -93,6 +94,7 @@ zshieldProtect(
     nwprojPath: '/Users/ci/projects/App.nwproj',
     extraArgs: ['--output', '/Users/ci/projects/protected']
 )
+zshieldAnalyze(nwprojPath: '/Users/ci/projects/App.nwproj')
 ```
 
 ## Error handling
@@ -101,10 +103,10 @@ zshieldProtect(
   `.nwproj` file, `actions` is missing/empty/contains an unsupported value,
   the pipeline isn't running on macOS, the `zshield` executable can't be
   found, or the `.nwproj` file doesn't exist.
-- Each action's exit code is checked; a non-zero exit raises a
-  `ZShieldException` naming the action and exit code (unless `failFast:
-  false`, in which case all actions run and a summary exception is thrown
-  at the end).
+- Each action's exit code is checked; a non-zero exit fails the build via
+  Jenkins' `error()` step, naming the action and exit code (unless
+  `failFast: false`, in which case all actions run and a single summary
+  error is raised at the end).
 
 ## Full example
 

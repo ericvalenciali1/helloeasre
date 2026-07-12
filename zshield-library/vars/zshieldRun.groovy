@@ -4,7 +4,7 @@
  * Runs one or more zShield CLI actions against a .nwproj file. Must run
  * where a macOS agent with zShield installed is available.
  *
- * Supported actions: 'upgrade', 'prepare', 'protect' (run in the order given).
+ * Supported actions: 'upgrade', 'prepare', 'protect', 'analyze' (run in the order given).
  *
  * IMPORTANT — command syntax: zShield's exact CLI flags aren't publicly
  * documented, so this step assumes the common pattern:
@@ -17,7 +17,7 @@
  *
  * Required parameters:
  *   nwprojPath   Path to the .nwproj file to operate on
- *   actions      List of one or more of: 'upgrade', 'prepare', 'protect'
+ *   actions      List of one or more of: 'upgrade', 'prepare', 'protect', 'analyze'
  *
  * Optional parameters:
  *   actionArgs        Map<String, List<String>> of extra CLI args per action,
@@ -126,7 +126,7 @@ def validateConfig(Map config) {
         error "zshieldRun requires a non-empty 'actions' list, e.g. ['prepare', 'protect']"
     }
     List<String> actions = config.actions as List<String>
-    List<String> allowedActions = ['upgrade', 'prepare', 'protect']
+    List<String> allowedActions = ['upgrade', 'prepare', 'protect', 'analyze']
     List<String> invalid = actions.findAll { !(it in allowedActions) }
     if (invalid) {
         error "Unsupported zshield action(s): ${invalid.join(', ')}. Allowed actions: ${allowedActions.join(', ')}"
