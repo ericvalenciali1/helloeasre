@@ -1,0 +1,108 @@
+// Example pipeline showing a "Code Protection" stage that lets the person
+// running the build pick which protection tool to use at runtime.
+//
+// Requires all four libraries to be registered in Jenkins:
+//   intune-wrap-library, zshield-library, guardsquare-library, code-protection-library
+// (Manage Jenkins > System > Global Pipeline Libraries), or loaded inline
+// with @Library as below.
+
+@Library([
+    'intune-wrap-library',
+    'zshield-library',
+    'guardsquare-library',
+    'code-protection-library'
+]) _
+
+pipeline {
+    agent none
+
+    parameters {
+        choice(name: 'PROTECTION_TOOL', choices: ['intune', 'guardsquare', 'zshield'],
+            description: 'Which tool should perform code protection')
+        choice(name: 'PLATFORM', choices: ['ios', 'android'],
+            description: 'Target platform (ignored for zshield)')
+        string(name: 'INPUT_FILE', defaultValue: '',
+            description: 'Path to the .ipa/.apk/.aab (intune, guardsquare) or .nwproj (zshield)')
+    }
+
+    stages {
+        stage('Code Protection') {
+            // intune-wrap requires Windows for Android; everything else here runs on macOS.
+            agent {
+                label (params.PROTECTION_TOOL == 'intune' && params.PLATFORM == 'android') ? 'windows' : 'macos'
+            }
+            steps {
+                script {
+                    def result = runCodeProtectionStage(
+                        tool: params.PROTECTION_TOOL,
+                        platform: params.PLATFORM,
+                        inputFile: params.INPUT_FILE
+                    )
+                    echo "Code protection result: ${result}"
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Maps the small set of build parameters above onto whatever config keys
+ * the selected underlying tool actually expects, then calls codeProtect().
+ * Replace the placeholder paths/config below with your real values (e.g.
+ * pulled from credentials, another parameter, or a config file).
+ */
+def runCodeProtectionStage(Map opts) {
+    String tool = opts.tool
+    String platform = opts.platform
+    String inputFile = opts.inputFile
+
+    Map config = [tool: tool, platform: platform]
+
+    switch (tool) {
+        case 'intune':
+            if (platform == 'ios') {
+                config += [
+                    inputIpa: inputFile,
+                    outputDir: "${WORKSPACE}/wrapped",
+                    provisioningProfile: "${WORKSPACE}/profiles/MyApp.mobileprovision",
+                    signingCertificate: 'Apple Distribution: My Company (ABCDE12345)'
+                ]
+            } else {
+                config += [
+                    inputApk: inputFile,
+                    outputDir: "${WORKSPACE}\\wrapped",
+                    bundletoolPath: 'C:\\tools\\bundletool-all.jar',
+                    keyStorePath: 'C:\\keys\\myapp.keystore',
+                    keyAlias: 'myapp',
+                    keyStorePasswordCredentialsId: 'android-keystore-password'
+                ]
+            }
+            break
+        case 'guardsquare':
+            if (platform == 'ios') {
+                config += [
+                    inputIpa: inputFile,
+                    outputIpa: "${WORKSPACE}/protected/MyApp-protected.ipa",
+                    configFile: "${WORKSPACE}/ixguard.yml"
+                ]
+            } else {
+                config += [
+                    inputApk: inputFile,
+                    outputApk: "${WORKSPACE}/protected/MyApp-protected.apk",
+                    configFile: "${WORKSPACE}/dexguard-project.pro",
+                    dexguardPath: '/Applications/DexGuard/lib/dexguard.jar'
+                ]
+            }
+            break
+        case 'zshield':
+            config += [
+                nwprojPath: inputFile,
+                actions: ['prepare', 'protect']
+            ]
+            break
+        default:
+            error "Unsupported PROTECTION_TOOL: ${tool}"
+    }
+
+    return codeProtect(config)
+}
